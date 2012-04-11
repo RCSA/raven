@@ -1,0 +1,6 @@
+name = Raven
+description = Provides Raven authentication.
+package = RCSA
+core = 7.x
+configure = admin/config/people/raven
+dependencies[] = user

@@ -1,0 +1,536 @@
+<?php
+
+/**
+ * @file
+ * 
+ */
+
+/**
+ * Implements hook_menu().
+ */
+function raven_menu() {
+    $items['user/raven/login'] = array(
+        'title' => 'Raven Login',
+        'access callback' => 'user_is_anonymous',
+        'page callback' => 'raven_login',
+        'type' => MENU_CALLBACK,
+    );
+
+    $items['user/raven/authenticate'] = array(
+        'title' => 'Raven Authentication',
+        'access callback' => TRUE,
+        'page callback' => 'raven_authenticate',
+        'type' => MENU_CALLBACK,
+    );
+    $items['user/raven/create'] = array(
+        'title' => 'Raven Authentication',
+        'access callback' => TRUE,
+        'page callback' => 'raven_create_raven_user',
+        'type' => MENU_CALLBACK,
+    );
+    $items['admin/config/people/raven'] = array(
+        'title' => 'Raven Authentication',
+        'description' => 'Configure options for raven authentication',
+        'page callback' => 'drupal_get_form',
+        'page arguments' => array('raven_config_form'),
+        'access arguments' => array('access administration pages'),
+        'type' => MENU_NORMAL_ITEM
+    );
+
+    return $items;
+}
+
+function raven_config_form($form, &$form_state) {
+    $form['raven_offset'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Time Offset'),
+        '#default_value' => variable_get('raven_offset', 0),
+        '#size' => 16,
+        '#maxlength' => 16,
+        '#description' => t("An adjustment to allow for the server's clock being wrong"),
+        '#required' => TRUE
+    );
+    $form['raven_update_offset'] = array(
+        '#type' => 'checkbox',
+        '#title' => t('Use universities time servers to automaticaly update offset as needed.'),
+        '#default_value' => variable_get('raven_update_offset', TRUE),
+        '#description' => t("If your server doesn't have a reliable clock, you can use this to get a correct offset value.")
+    );
+    $form['raven_tollerance'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Time Tollerance'),
+        '#default_value' => variable_get('raven_tollerance', 60),
+        '#size' => 5,
+        '#maxlength' => 5,
+        '#description' => t("The amount of tollerance to allow when checking the time of a request."),
+        '#required' => TRUE
+    );
+    $form['raven_ignore_time'] = array(
+        '#type' => 'checkbox',
+        '#title' => t('Ignore Time'),
+        '#default_value' => variable_get('raven_ignore_time', FALSE),
+        '#description' => t("If your server doesn't have a reliable clock, you can ignore timing, but this does open you up to 'man in the midle' attacks.")
+    );
+    $form['raven_allow_new'] = array(
+        '#type' => 'checkbox',
+        '#title' => t('Allow New Users'),
+        '#default_value' => variable_get('raven_allow_new', TRUE),
+        '#description' => t("Allow users who don't already have accounts on this website to log in with raven.")
+    );
+    return system_settings_form($form);
+}
+
+function raven_help($path, $arg) {
+    switch ($path) {
+        case 'admin/help#raven':
+            return '<h2>' . t('Raven Authentication') . '</h2>' .
+                    '<p>' . t('Raven authentication is provided by the raven module.' .
+                            '  By default, anyone with a raven account can log into the website.' .
+                            "  You can modify this in the settings to only allow users you've explicitly created.") . '</p>' .
+                    '<h3>Timing Errors</h3>' .
+                    '<p>' . t('If the clock on your server is not accurate, you may experience timing issues.  ' .
+                            'The raven module configuration page offers help witht his problem by allowing you to ' .
+                            'specify an offset.  The offset is added to the interval to correct the time.  ' .
+                            "You can also specify a higher tollerance to allow for a clock which changes and " .
+                            "just isn't very accurate.") . '</p>';
+    }
+}
+
+function raven_config_form_validate($form, &$form_state) {
+    if (!is_numeric($form_state['values']['raven_offset'])) {
+        form_set_error('raven_offset', t('Please ensure raven offset is a number'));
+    }
+    if (!is_numeric($form_state['values']['raven_tollerance'])) {
+        form_set_error('raven_tollerance', t('Please ensure raven tollerance is a number'));
+    }
+}
+
+/**
+ * Implements hook_form_alter
+ * Adds Raven to the login forms.
+ */
+function raven_form_alter(&$form, &$form_state, $form_id) {
+    if ($form_id == "user_login_block" || $form_id == "user_login") {
+        global $user, $base_url;
+        $dest = "";
+        if (isset($_REQUEST['destination'])) {
+            $dest = base64_encode($_REQUEST['destination']);
+        }
+        $form['raven'] = array(
+            '#markup' =>
+            '<div class="clearfix"><a href="' .
+            url('user/raven/login/' . $dest).
+            '">' .
+            '<img src="' . $base_url . '/' . drupal_get_path('module', 'raven') . '/raven.gif" alt="Raven logo" style="float: left; padding-right: 20px;" />' .
+            '<p style="padding-top: 10px;">Cambridge students and staff can click here to login with Raven.</p>' .
+            '</a></div>' .
+            '<hr style="margin: 20px 0;" />',
+            '#weight' => -50
+        );
+    }
+}
+
+/**
+ * Implements hook_block_info().
+ */
+function raven_block_info() {
+
+    $blocks = array();
+    $blocks['raven-loginblock'] = array(
+        'info' => 'Raven Login for current page'
+    );
+    return $blocks;
+}
+
+/**
+ * Implements hook_block_view().
+ */
+function raven_block_view($delta = '') {
+    global $user, $base_url, $base_path;
+    switch ($delta) {
+        case 'raven-loginblock':
+            if ($user->uid) {
+                return array();
+            } else {
+                $return_path = str_replace($base_path, "", drupal_get_path_alias(request_uri()));
+                $data['content'] =
+                        '<div class="clearfix"><a href="' . url('user/raven/login/' . base64_encode($return_path) . '/' . base64_encode($return_path)) . '">' .
+                        '<img src="' . $base_url . '/' . drupal_get_path('module', 'raven') . '/raven.gif" alt="Raven logo" style="float: left; padding-right: 20px;" />' .
+                        '<p style="padding-top: 10px;">Cambridge students and staff can click here to login with Raven.</p>' .
+                        '</a></div>'
+                ;
+                return $data;
+            }
+    }
+}
+
+/**
+ * Checks if a user has been logged in using Raven at any point.
+ */
+function raven_authenticated_user($uid = NULL) {
+    return raven_get_crsid($uid) ? TRUE : FALSE;
+}
+
+/**
+ * Gets the crsid of a user.
+ */
+function raven_get_crsid($uid = NULL) {
+    if (!isset($uid))
+        $uid = $GLOBALS['user']->uid;
+    $result = db_query("SELECT authname FROM {authmap} WHERE uid = :uid AND module = 'raven'", array(':uid' => $uid));
+    return ($result->rowCount() > 0) ? $result->fetchField() : FALSE;
+}
+
+/**
+ * Starts the Raven authentication process.
+ *
+ * @param $redirect
+ *   (optional) The absolute URL that will be redirected too upon successful
+ *   Raven login or user cancellation. Defaults to the user page.
+ */
+function raven_login($redirect = '', $redirectCancel = '') {
+    if ($redirect == '')
+        $redirect = '';
+    else
+        $redirect = base64_decode($redirect);
+    if ($redirectCancel == '')
+        $redirectCancel = 'user';
+    else
+        $redirectCancel = base64_decode($redirectCancel);
+    $params = array(
+        'ver' => '2',
+        'url' => url('user/raven/authenticate', array('absolute' => TRUE)),
+        'desc' => variable_get('site_name'),
+        'params' => base64_encode($redirect . "\n" . $redirectCancel),
+    );
+    drupal_goto('https://raven.cam.ac.uk/auth/authenticate.html', array(
+        'query' => $params,
+        'external' => TRUE,
+    ));
+}
+
+/**
+ * Processes a WLS response from Raven.
+ */
+function raven_authenticate() {
+    if (isset($_REQUEST['WLS-Response']) && count(explode('!', $_REQUEST['WLS-Response'])) == 13) {
+        $params = array();
+        $cancelled = FALSE;
+        list(
+                $params['ver'],
+                $params['status'],
+                $params['msg'],
+                $params['issue'],
+                $params['id'],
+                $params['url'],
+                $params['principal'],
+                $params['auth'],
+                $params['sso'],
+                $params['life'],
+                $params['params'],
+                $params['kid'],
+                $params['sig']
+                ) = explode('!', $_REQUEST['WLS-Response']);
+
+        $error = TRUE;
+
+        switch ($params['status']) {
+            case '200':
+                // Successful authentication
+                //The server time is not very acurate, so an ajustment is needed.
+                $offset = variable_get('raven_offset', 0);
+                $interval = (REQUEST_TIME) - raven_iso2time($params['issue']) + $offset;
+                if (variable_get('raven_ignore_time', FALSE) || abs($interval) < variable_get('raven_tollerance', 60) || (variable_get('raven_update_offset', TRUE) && raven_check_time(REQUEST_TIME, raven_iso2time($params['issue'])))) {
+                    $data = join('!', array_slice(array_reverse($params), 0, -2));
+                    $valid = raven_check_sig($data, $params['sig'], $params['kid']);
+                    if ($valid) {
+                        // Valid response.
+                        $identity = $params['principal'];
+                        $account = user_external_load($params['principal']);
+                        // Check if user is blocked.
+                        //watchdog('raven', 'Raven authentication of @user starting. With token which is ' . $interval . ' seconds off.', array('@user' => $params['principal']), WATCHDOG_DEBUG);
+                        $state['values']['name'] = $identity;
+                        user_login_name_validate(array(), $state);
+                        if (!form_get_errors()) {
+                            // Load global $user and perform final login tasks.
+                            $result = db_query("SELECT uid FROM {users} WHERE name = :name", array(':name' => $identity));
+                            foreach ($result as $record) {
+                                $form_state['uid'] = $record->uid;
+                            }
+                            if (isset($form_state['uid'])) {
+                                user_login_submit(array(), $form_state);
+                            } else {
+                                if (variable_get('raven_allow_new', TRUE)) {
+                                    watchdog('raven', 'New user @user logged in with raven.', array('@user' => $params['principal']), WATCHDOG_NOTICE);
+                                    user_external_login_register($params['principal'], 'raven');
+                                } else {
+                                    watchdog('raven', 'New user @user attempted to log in with raven.', array('@user' => $params['principal']), WATCHDOG_NOTICE);
+                                }
+                            }
+                        } else {
+                            watchdog('raven', 'Blocked user @user attempted to log in with raven.', array('@user' => $params['principal']), WATCHDOG_NOTICE);
+                        }
+                        global $user;
+                        if ($user->uid) {
+                            if ($user->created == REQUEST_TIME) {
+                                $lookup = raven_lookup($params['principal']);
+                                if (isset($lookup['mail']))
+                                    user_save($user, array('mail' => $lookup['mail']));
+                            }
+                            $error = FALSE;
+                        }
+                    } else {
+                        // Response was not sent by Raven or has been tampered with.
+                        watchdog('raven', 'Raven response signature check failed.', array(), WATCHDOG_NOTICE);
+                    }
+                } else {
+                    // Response is over one minute old.
+                    watchdog('raven', 'Raven response was made ' . $interval . ' seconds ago.  The request time was ' . REQUEST_TIME . 'but the raven response time was' . raven_iso2time($params['issue']), array(), WATCHDOG_DEBUG);
+                }
+                break;
+
+            case '410':
+                // The user cancelled the authentication request
+                watchdog('raven', 'Raven authentication was cancelled by the user.', array(), WATCHDOG_DEBUG);
+                $error = FALSE;
+                $cancelled = TRUE;
+                break;
+
+            case '520':
+                // Unsupported protocol version
+                watchdog('raven', 'Unsupported Raven WAA2WLS protocol version.', array(), WATCHDOG_CRITICAL);
+                break;
+
+            case '530':
+                // General request parameter error
+                watchdog('raven', 'Raven authentication failed due to error in request.', array(), WATCHDOG_ERROR);
+                break;
+
+            case '560':
+                // WAA not authorised
+                watchdog('raven', 'Not authorised to authenticate with Raven.', array(), WATCHDOG_CRITICAL);
+                break;
+
+            case '570':
+                // Authentication declined
+                watchdog('raven', 'Raven authentication was declined on this occassion.', array(), WATCHDOG_WARNING);
+                break;
+
+            case '510':
+            // No mutually acceptable authentication types available
+            case '540':
+                // Interaction would be required
+                watchdog('raven', 'Raven authentication failed with unexpected status !status.', array('!status' => $params['status']), WATCHDOG_ERROR);
+                break;
+
+            default:
+                watchdog('raven', 'Raven authentication failed with unknown status @status.', array('@status' => $params['status']), WATCHDOG_ERROR);
+                break;
+        }
+        $params_url = base64_decode($params['params']);
+        $params_arr = explode("\n", $params_url);
+        if ($error)
+            drupal_set_message('There was an error during Raven authentication. If this problem persists, please <a href="mailto:webmaster@cucanoe.co.uk">contact the webmaster</a> for assistance.', 'error');
+        if ($cancelled) {
+            $destination = drupal_parse_url($params_arr[1]);
+        } else {
+            $destination = drupal_parse_url($params_arr[0]);
+        }
+        if (substr($destination['path'], 0, 1) == '/')
+            $destination['path'] = substr($destination['path'], 1);
+        drupal_goto($destination['path'], array(
+            'query' => $destination['query'],
+            'fragment' => $destination['fragment'],
+        ));
+    }
+    else {
+// Response is invalid.
+        watchdog('raven', 'Raven WLS response was invalid.', array(), WATCHDOG_NOTICE);
+    }
+
+    return '<p>' . 'There was an error during Raven authentication. If this problem persists, please <a href="mailto:webmaster@cucanoe.co.uk">contact the webmaster</a> for assistance.' . '</p>';
+}
+
+/**
+ * Verifies the signature of the Raven response is correct.
+ *
+ * Public keys can be found here: https://raven.cam.ac.uk/project/keys/
+ */
+function raven_check_sig($data, $sig, $key_id) {
+    $key_path = DRUPAL_ROOT . '/' . drupal_get_path('module', 'raven') . '/pubkey' . $key_id . '.crt';
+    $key_crt = file_get_contents($key_path);
+    if ($key_crt === FALSE) {
+        watchdog('raven', 'Raven signature check failed due to an error reading the certifcate file.', array(), WATCHDOG_CRITICAL);
+        return FALSE;
+    }
+    if (hash('md5', $key_crt) != '9eadb8dc6b8e670e4990855a1411e7cd') {
+        watchdog('raven', 'Raven signature check failed because the certificate file checksum is incorrect.', array(), WATCHDOG_CRITICAL);
+        return FALSE;
+    }
+
+    $key = openssl_get_publickey($key_crt);
+    if ($key === FALSE) {
+        watchdog('raven', 'Raven signature check failed because the public key could not be read.', array(), WATCHDOG_CRITICAL);
+        return FALSE;
+    }
+    $result = openssl_verify(rawurldecode($data), raven_wls_decode(rawurldecode($sig)), $key);
+    openssl_free_key($key);
+
+    if ($result == 1) {
+        return TRUE;
+    } else {
+        return FALSE;
+    }
+}
+
+/**
+ * Lookup a user by their CRSid.
+ */
+function raven_lookup($crsid = NULL) {
+    if (!isset($crsid))
+        $crsid = raven_get_crsid();
+
+    $connection = ldap_connect('ldap.lookup.cam.ac.uk');
+    if ($connection === FALSE)
+        return FALSE;
+
+    $success = ldap_bind($connection);
+    if ($success === FALSE)
+        return FALSE;
+
+    $search = ldap_list($connection, 'ou=people,o=University of Cambridge,dc=cam,dc=ac,dc=uk', 'uid=' . $crsid);
+    if ($search === FALSE)
+        return FALSE;
+
+    if (ldap_count_entries($connection, $search) != 1)
+        return FALSE;
+    $entries = ldap_get_entries($connection, $search);
+    $entry = $entries[0];
+
+    $registered_name = FALSE;
+    if ($entry['cn'][0] != $crsid) {
+        $registered_name = $entry['cn'][0];
+    }
+
+    $surname = FALSE;
+    if ($entry['sn'][0] != $crsid) {
+        $surname = $entry['sn'][0];
+    }
+
+    $display_name = FALSE;
+    if (isset($entry['displayname']) && $entry['displayname']['count'] > 0) {
+        $display_name = $entry['displayname'][0];
+    }
+
+    $mail = FALSE;
+    if (isset($entry['mail']) && $entry['mail']['count'] > 0) {
+        $mail = $entry['mail'][0];
+    }
+
+    $student = FALSE;
+    $staff = FALSE;
+    if (isset($entry['misaffiliation'])) {
+        foreach ($entry['misaffiliation'] as $affiliation) {
+            if ($affiliation == 'student')
+                $student = TRUE;
+            else if ($affiliation == 'staff')
+                $staff = TRUE;
+        }
+    }
+
+    $institutions = array();
+    if (isset($entry['ou'])) {
+        for ($i = 0; $i < $entry['ou']['count']; ++$i) {
+            $institutions[$i] = array(
+                'id' => $entry['instid'][$i],
+                'name' => $entry['ou'][$i]
+            );
+        }
+    }
+
+    ldap_close($connection);
+
+    return array(
+        'registered_name' => $registered_name,
+        'surname' => $surname,
+        'display_name' => $display_name,
+        'mail' => $mail,
+        'student' => $student,
+        'staff' => $staff,
+        'institutions' => $institutions
+    );
+}
+
+/**
+ * Decodes a WLS signature string.
+ */
+function raven_wls_decode($str) {
+    $result = str_replace(array('-', '.', '_'), array('+', '/', '='), $str);
+    $result = base64_decode($result);
+    return $result;
+}
+
+/**
+ * Converts an ISO datetime to a Unix timestamp.
+ */
+function raven_iso2time($t) {
+    return gmmktime(
+                    substr($t, 9, 2), substr($t, 11, 2), substr($t, 13, 2), substr($t, 4, 2), substr($t, 6, 2), substr($t, 0, 4)
+    );
+}
+
+function raven_query_time_server($timeserver, $socket) {
+    /* Query a time server
+      (C) 1999-09-29, Ralf D. Kloth (QRQ.software) <ralf at qrq.de> */
+
+    $fp = fsockopen($timeserver, $socket, $err, $errstr, 5);
+    # parameters: server, socket, error code, error text, timeout
+    if ($fp) {
+        fputs($fp, "\n");
+        $timevalue = fread($fp, 49);
+        fclose($fp); # close the connection
+    } else {
+        $timevalue = " ";
+    }
+
+    $ret = array();
+    $ret[] = $timevalue;
+    $ret[] = $err;     # error code
+    $ret[] = $errstr;  # error text
+    return($ret);
+}
+
+function raven_check_time($request_t, $raven_t, $depth = 5) {
+    $servers = array(
+        "ntp0.csx.cam.ac.uk",
+        "ntp1.csx.cam.ac.uk",
+        "ntp2.csx.cam.ac.uk");
+    $timeserver = $servers[rand(0, 1)];
+    $timercvd = raven_query_time_server($timeserver, 37);
+    if (!$timercvd[1]) { # if no error from query_time_server
+        $timevalue = bin2hex($timercvd[0]);
+        $timevalue = abs(HexDec('7fffffff') - HexDec($timevalue) - HexDec('7fffffff'));
+        $timestamp = $timevalue - 2208988800; # convert to UNIX epoch time stamp
+        $offset = $timestamp - time();
+
+        variable_set('raven_offset', $offset);
+        $interval = $request_t - $raven_t + $offset;
+        watchdog('raven', 'Offset updated to @offset   Drupal Time: @drupal   Raven time:@raven   NTP Time:@ntp', array(
+            '@drupal' => date('c', $request_t),
+            '@raven' => date('c', $raven_t),
+            '@offset' => $offset,
+            '@ntp' => $timestamp
+                ), WATCHDOG_NOTICE);
+        return abs($interval) < variable_get('raven_tollerance', 60);
+    } #if (!$timercvd)
+    else {
+        watchdog('raven', 'Unable to retrieve network time from @server: @err: @errstr', array(
+            '@server' => $timeserver,
+            '@err' => $timercvd[1],
+            '@errstr' => $timercvd[2]
+                ), WATCHDOG_ERROR);
+        if ($depth == 0)
+            return FALSE;
+        return raven_check_time($request_t, $raven_t, $depth - 1);
+    } # else
+}
